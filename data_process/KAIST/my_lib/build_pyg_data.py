@@ -149,3 +149,74 @@ def build_similarity_knn_graph(csv_path: str, save_dir: str, num_edges: int = 10
     print(f"📁 图文件:   {graph_pt}")
 
     return nodes_csv, edges_csv, graph_pt
+
+def add_random_masks_to_pyg(
+    graph_path: str,
+    save_path: str = None,
+    ratios: dict = {"train": 0.6, "val": 0.2, "test": 0.2},
+    seed: int = 42
+):
+    """
+    向 PyG 格式的图文件中添加随机的 train/val/test 掩码数组。
+    
+    参数:
+        graph_path (str): 原始图文件路径 (.pt)。
+        save_path (str): 新文件保存路径；若为 None，则覆盖原文件。
+        ratios (dict): 各掩码占比，如 {"train":0.6, "val":0.2, "test":0.2}。
+        seed (int): 随机种子，保证可复现。
+    
+    返回:
+        save_path (str): 保存的新图文件路径。
+    """
+
+    # ===================== 1️⃣ 读取图文件 =====================
+    if not os.path.exists(graph_path):
+        raise FileNotFoundError(f"❌ 找不到图文件: {graph_path}")
+    
+    data = torch.load(graph_path)
+    num_nodes = data.num_nodes if hasattr(data, "num_nodes") else data.x.shape[0]
+    print(f"📦 已加载图，共 {num_nodes} 个节点。")
+
+    # ===================== 2️⃣ 检查已有掩码 =====================
+    masks_exist = all(hasattr(data, k + "_mask") for k in ["train", "val", "test"])
+    if masks_exist:
+        print("⚠️ 掩码已存在，未做修改。")
+        return graph_path
+
+    # ===================== 3️⃣ 生成随机掩码 =====================
+    np.random.seed(seed)
+    indices = np.arange(num_nodes)
+    np.random.shuffle(indices)
+
+    n_train = int(num_nodes * ratios.get("train", 0.6))
+    n_val   = int(num_nodes * ratios.get("val", 0.2))
+    n_test  = num_nodes - n_train - n_val
+
+    train_idx = indices[:n_train]
+    val_idx   = indices[n_train:n_train + n_val]
+    test_idx  = indices[n_train + n_val:]
+
+    train_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    val_mask   = torch.zeros(num_nodes, dtype=torch.bool)
+    test_mask  = torch.zeros(num_nodes, dtype=torch.bool)
+
+    train_mask[train_idx] = True
+    val_mask[val_idx]     = True
+    test_mask[test_idx]   = True
+
+    data.train_mask = train_mask
+    data.val_mask = val_mask
+    data.test_mask = test_mask
+
+    print(f"✅ 掩码生成完成：train={n_train}, val={n_val}, test={n_test}")
+
+    # ===================== 4️⃣ 保存文件 =====================
+    if save_path is None:
+        save_path = graph_path  # 覆盖原文件
+    else:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+    torch.save(data, save_path)
+    print(f"💾 新图文件已保存：{save_path}")
+
+    return save_path
