@@ -220,3 +220,90 @@ def add_random_masks_to_pyg(
     print(f"💾 新图文件已保存：{save_path}")
 
     return save_path
+
+def add_random_masks_with_label_split(
+    graph_path: str,
+    save_path: str = None,
+    ratios: dict = {"train": 0.6, "val": 0.2, "test": 0.2},
+    train_label_ratio: float = 0.5,
+    seed: int = 42
+):
+    """
+    向 PyG 图文件中添加 train/val/test 掩码，
+    并在 train 内部划分 train_withlabel_mask / train_nolabel_mask。
+    若未指定 save_path，则覆盖原文件。
+
+    参数:
+        graph_path (str): 输入图文件路径 (.pt)
+        save_path (str): 保存路径；若为 None，则覆盖原文件
+        ratios (dict): 掩码占比，如 {"train":0.6, "val":0.2, "test":0.2}
+        train_label_ratio (float): 在 train 样本中有标签比例
+        seed (int): 随机种子
+    返回:
+        save_path (str): 保存的新图文件路径
+    """
+
+    # ===================== 1️⃣ 加载 PyG 图 =====================
+    if not os.path.exists(graph_path):
+        raise FileNotFoundError(f"❌ 找不到图文件: {graph_path}")
+
+    data = torch.load(graph_path)
+    num_nodes = data.num_nodes if hasattr(data, "num_nodes") else data.x.shape[0]
+    print(f"📦 已加载图文件，共 {num_nodes} 个节点。")
+
+    # ===================== 2️⃣ 检查是否已有掩码 =====================
+    masks_exist = any(hasattr(data, m) for m in ["train_mask", "val_mask", "test_mask"])
+    if masks_exist:
+        print("⚠️ 已检测到图中存在部分掩码，将不会覆盖已有掩码。")
+
+    # ===================== 3️⃣ 随机划分索引 =====================
+    np.random.seed(seed)
+    indices = np.random.permutation(num_nodes)
+
+    n_train = int(num_nodes * ratios.get("train", 0.6))
+    n_val   = int(num_nodes * ratios.get("val", 0.2))
+    n_test  = num_nodes - n_train - n_val
+
+    train_idx = indices[:n_train]
+    val_idx   = indices[n_train:n_train + n_val]
+    test_idx  = indices[n_train + n_val:]
+
+    # ===================== 4️⃣ 生成主掩码 =====================
+    if not hasattr(data, "train_mask"):
+        data.train_mask = torch.zeros(num_nodes, dtype=torch.bool)
+        data.train_mask[train_idx] = True
+    if not hasattr(data, "val_mask"):
+        data.val_mask = torch.zeros(num_nodes, dtype=torch.bool)
+        data.val_mask[val_idx] = True
+    if not hasattr(data, "test_mask"):
+        data.test_mask = torch.zeros(num_nodes, dtype=torch.bool)
+        data.test_mask[test_idx] = True
+
+    print(f"✅ 已生成主掩码：train={n_train}, val={n_val}, test={n_test}")
+
+    # ===================== 5️⃣ 生成训练子掩码 =====================
+    np.random.seed(seed + 1)
+    n_withlabel = int(n_train * train_label_ratio)
+    shuffled_train = np.random.permutation(train_idx)
+
+    withlabel_idx = shuffled_train[:n_withlabel]
+    nolabel_idx   = shuffled_train[n_withlabel:]
+
+    data.train_withlabel_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    data.train_nolabel_mask   = torch.zeros(num_nodes, dtype=torch.bool)
+    data.train_withlabel_mask[withlabel_idx] = True
+    data.train_nolabel_mask[nolabel_idx] = True
+
+    print(f"🎯 训练集内部划分：with_label={n_withlabel}, no_label={len(nolabel_idx)}")
+
+    # ===================== 6️⃣ 保存逻辑 =====================
+    if save_path and save_path.strip():
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        torch.save(data, save_path)
+        print(f"💾 已将含掩码的新图文件保存至：{save_path}")
+    else:
+        torch.save(data, graph_path)
+        save_path = graph_path
+        print(f"💾 未指定保存路径，已覆盖原文件：{graph_path}")
+
+    return save_path
