@@ -1,0 +1,4 @@
+silhouette: None
+mean_norm: 1.312300443649292
+std_norm: 1.093483805656433
+feature_uniformity: 0.04397912323474884
