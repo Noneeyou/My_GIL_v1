@@ -17,6 +17,7 @@ def build_local_temporal_graph(
     基于时间顺序构建局部时序图。
     每一行是一个节点，上下相邻样本构成边。
     标签列可指定索引，若不指定则默认最后一列。
+    🚫 自动忽略首列（常用于序号/ID），避免误入特征计算。
 
     参数:
         csv_path (str): 输入 CSV 文件路径。
@@ -31,12 +32,24 @@ def build_local_temporal_graph(
     # === 读取数据 ===
     df = pd.read_csv(csv_path)
     num_nodes = len(df)
+    if num_nodes == 0:
+        raise ValueError("❌ 输入 CSV 文件为空。")
 
-    # === 提取标签列 ===
+    # === 标签列判断 ===
     if label_col is None:
         label_col = df.shape[1] - 1
+
+    # === 提取标签列 ===
     y = torch.tensor(df.iloc[:, label_col].values, dtype=torch.long)
-    df_features = df.drop(df.columns[label_col], axis=1)
+
+    # === 构造特征列（去掉首列 + 标签列）===
+    drop_cols = [df.columns[0], df.columns[label_col]] if label_col != 0 else [df.columns[0]]
+    df_features = df.drop(columns=drop_cols, errors="ignore")
+
+    # 保留数值列
+    df_features = df_features.select_dtypes(include=["float", "int"])
+    if df_features.shape[1] == 0:
+        raise ValueError("❌ 特征列为空，请检查输入 CSV。")
 
     # === 构建边 ===
     half = num_edges // 2
@@ -81,8 +94,10 @@ def build_local_temporal_graph(
     print(f"📁 nodes.csv: {nodes_path}")
     print(f"📁 edges.csv: {edges_path}")
     print(f"📁 graph.pt : {graph_path}")
+    print(f"🧩 特征维度: {x.shape[1]} (已自动忽略首列与标签列)")
 
     return nodes_path, edges_path, graph_path
+
 
 def build_similarity_knn_graph(
     csv_path: str,
