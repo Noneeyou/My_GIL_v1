@@ -162,6 +162,7 @@ def build_similarity_knn_graph(
 
     return nodes_csv, edges_csv, graph_pt
 
+
 def add_random_masks_to_pyg(
     graph_path: str,
     save_path: str = None,
