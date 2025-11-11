@@ -1,0 +1,157 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.nn import GCNConv
+
+
+# ========= 1️⃣ 图编码器部分 =========
+class GCNEncoder(nn.Module):
+    """
+    基础图卷积编码器，用于提取结构化特征。
+    """
+    def __init__(self, in_dim, hidden_dim, out_dim):
+        super(GCNEncoder, self).__init__()
+        self.conv1 = GCNConv(in_dim, hidden_dim)
+        self.conv2 = GCNConv(hidden_dim, out_dim)
+
+    def forward(self, x, edge_index):
+        x = F.relu(self.conv1(x, edge_index))
+        x = self.conv2(x, edge_index)
+        return x
+
+
+# ========= 2️⃣ 投影头部分 =========
+class MLPHead(nn.Module):
+    """
+    投影头，将编码器输出映射到对比空间。
+    """
+    def __init__(self, in_dim, proj_dim):
+        super(MLPHead, self).__init__()
+        self.fc1 = nn.Linear(in_dim, proj_dim)
+        self.fc2 = nn.Linear(proj_dim, proj_dim)
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
+
+
+# ========= 3️⃣ 封装类：GraphContrastiveLearner =========
+class GraphContrastiveLearner(nn.Module):
+    """
+    图对比学习模块：
+    - 内含编码器 + 投影头
+    - 提供特征提取与对比损失计算
+    """
+    def __init__(self, in_dim, hidden_dim, out_dim, proj_dim, tau=0.5):
+        super(GraphContrastiveLearner, self).__init__()
+        self.encoder = GCNEncoder(in_dim, hidden_dim, out_dim)
+        self.projector = MLPHead(out_dim, proj_dim)
+        self.tau = tau
+
+    def forward(self, x, edge_index):
+        """
+        前向计算，返回编码器特征 h 和投影特征 z
+        """
+        h = self.encoder(x, edge_index)
+        z = self.projector(h)
+        return h, z
+
+    def info_nce_loss(self, z1, z2):
+        """
+        计算 InfoNCE 对比学习损失
+        """
+        z1 = F.normalize(z1, dim=1)
+        z2 = F.normalize(z2, dim=1)
+
+        sim_matrix = torch.matmul(z1, z2.T) / self.tau
+        sim_matrix = torch.exp(sim_matrix)
+
+        pos = sim_matrix.diag()
+        loss = -torch.log(pos / (sim_matrix.sum(dim=1) + 1e-8))
+        return loss.mean()
+
+    def compute_loss(self, x1, edge_index1, x2, edge_index2):
+        """
+        一步式计算（编码 + 投影 + 损失）
+        """
+        _, z1 = self.forward(x1, edge_index1)
+        _, z2 = self.forward(x2, edge_index2)
+        loss = self.info_nce_loss(z1, z2)
+        return loss
+
+    
+def summarize_graph(data):
+    # ======== 打印图的基本信息 ========
+    print("\n" + "="*60)
+    print("🧩 Graph Data Summary")
+    print("="*60)
+
+    # 节点信息
+    num_nodes = data.num_nodes if hasattr(data, 'num_nodes') else data.x.size(0)
+    num_features = data.num_features if hasattr(data, 'num_features') else data.x.size(1)
+    print(f"📊 节点数量 (num_nodes): {num_nodes}")
+    print(f"📈 节点特征维度 (num_features): {num_features}")
+
+    # 边信息
+    if hasattr(data, "edge_index"):
+        num_edges = data.edge_index.size(1)
+        print(f"🔗 边数量 (num_edges): {num_edges}")
+
+        # 检查是否有自环或重复边
+        src, dst = data.edge_index
+        self_loops = (src == dst).sum().item()
+        print(f"🔁 自环数量 (self-loops): {self_loops}")
+
+    # 其他信息
+    if hasattr(data, "edge_attr") and data.edge_attr is not None:
+        print(f"⚙️ 边特征维度 (edge_attr_dim): {data.edge_attr.size(1)}")
+
+    if hasattr(data, "y") and data.y is not None:
+        print(f"🎯 标签维度 (y_dim): {data.y.shape}")
+
+    # 打印存储键值
+    print(f"\n🧾 Data对象包含字段: {list(data.keys())}")
+    print("="*60 + "\n")
+
+def augment_graph(data, feature_drop_prob=0.1, edge_drop_prob=0.1, noise_std=0.01):
+    """
+    对输入的 PyG Data 对象进行增强
+    --------------------------------
+    feature_drop_prob : float
+        随机mask节点特征的比例
+    edge_drop_prob : float
+        随机删除边的比例
+    noise_std : float
+        特征加性噪声标准差
+    """
+    import torch
+    import copy
+    import numpy as np
+
+    # 深拷贝一份，防止修改原图
+    aug_data = copy.deepcopy(data)
+
+    # ---------- (1) 特征增强 ----------
+    x = aug_data.x.clone()
+
+    # 随机mask部分节点特征
+    mask = torch.rand_like(x) > feature_drop_prob
+    x = x * mask
+
+    # 加噪声（模拟测量误差）
+    noise = noise_std * torch.randn_like(x)
+    x = x + noise
+
+    aug_data.x = x
+
+    # ---------- (2) 结构增强 ----------
+    edge_index = aug_data.edge_index.clone()
+    num_edges = edge_index.shape[1]
+
+    # 随机删除一部分边
+    keep_mask = torch.rand(num_edges) > edge_drop_prob
+    edge_index = edge_index[:, keep_mask]
+    aug_data.edge_index = edge_index
+
+    return aug_data
