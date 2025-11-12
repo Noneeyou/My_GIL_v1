@@ -103,25 +103,29 @@ def build_similarity_knn_graph(
     csv_path: str,
     save_dir: str,
     num_edges: int = 10,
-    label_col: int = None
+    label_col: int = None,
+    block_size: int = 5000
 ):
     """
-    基于样本间余弦相似度 + KNN 建图。
-    可指定标签列索引；若不指定则默认最后一列。
-    输出结构与 build_local_temporal_graph 一致。
+    基于余弦相似度 + KNN 建图（分块计算版，低内存）。
+    🚫 自动忽略首列（序号）与标签列。
+    ✅ 支持 data.y。
+    ✅ 输出 nodes.csv / edges.csv / graph.pt。
 
     参数:
         csv_path (str): 输入 CSV 文件路径。
-        save_dir (str): 图结构文件的保存文件夹。
-        num_edges (int): 每个节点连接的邻点数(KNN数量)。
+        save_dir (str): 图文件输出文件夹。
+        num_edges (int): 每个节点连接的邻点数 (KNN数量)。
         label_col (int): 标签列索引（默认 None → 最后一列）。
+        block_size (int): 分块计算大小（越小越省内存）。
     返回:
-        (nodes_csv, edges_csv, graph_pt): 保存的文件路径元组。
+        (nodes_csv, edges_csv, graph_pt)
     """
 
-    # === 读取数据 ===
+    # ===================== 1️⃣ 读取数据 =====================
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"❌ 找不到输入文件: {csv_path}")
+
     df = pd.read_csv(csv_path)
     print(f"📊 已读取数据: {df.shape}")
 
@@ -130,36 +134,44 @@ def build_similarity_knn_graph(
         label_col = df.shape[1] - 1
     y = torch.tensor(df.iloc[:, label_col].values, dtype=torch.long)
 
-    # 忽略首列（序号）+ 标签列
-    df_features = df.drop(df.columns[[0, label_col]], axis=1, errors="ignore")
+    # === 忽略首列与标签列 ===
+    drop_cols = [df.columns[0], df.columns[label_col]] if label_col != 0 else [df.columns[0]]
+    df_features = df.drop(columns=drop_cols, errors="ignore")
     df_features = df_features.select_dtypes(include=["float", "int"])
-
     features = df_features.values.astype(np.float32)
     num_nodes = features.shape[0]
-    print(f"🧩 使用特征列数: {features.shape[1]} | 特征列示例: {list(df_features.columns)[:5]} ...")
+    print(f"🧩 使用特征列数: {features.shape[1]} | 节点数: {num_nodes}")
 
-    # === 计算余弦相似度 ===
-    print("⚙️ 正在计算余弦相似度矩阵...")
-    sim_matrix = cosine_similarity(features)
-    np.fill_diagonal(sim_matrix, -np.inf)
-
-    # === KNN 边构建 ===
-    print(f"🔍 正在为每个节点选取 {num_edges} 个最相似邻居...")
+    # ===================== 2️⃣ 分块计算余弦相似度 =====================
     edges = []
-    for i in range(num_nodes):
-        topk_idx = np.argpartition(sim_matrix[i], -num_edges)[-num_edges:]
-        for j in topk_idx:
-            edges.append([i, j])
-            edges.append([j, i])
+    print(f"⚙️ 分块计算余弦相似度，每块 {block_size} 节点，目标邻点数={num_edges}")
 
-    edges = np.array(edges)
+    for start in range(0, num_nodes, block_size):
+        end = min(num_nodes, start + block_size)
+        block = features[start:end]
+
+        # 计算 block 与全体样本的相似度
+        sim_part = cosine_similarity(block, features)
+        np.fill_diagonal(sim_part[:, start:end], -np.inf)
+
+        # 取前 num_edges 个最相似节点
+        for bi in range(sim_part.shape[0]):
+            global_i = start + bi
+            topk_idx = np.argpartition(sim_part[bi], -num_edges)[-num_edges:]
+            for j in topk_idx:
+                edges.append((global_i, j))
+                edges.append((j, global_i))
+
+        print(f"  ✅ 已处理 {end}/{num_nodes} 节点块")
+
+    edges = np.array(edges, dtype=np.int64)
     edge_index = torch.tensor(edges.T, dtype=torch.long)
     x = torch.tensor(features, dtype=torch.float)
 
-    # === 构造 PyG 对象 ===
+    # ===================== 3️⃣ 构造 PyG Data =====================
     data = Data(x=x, edge_index=edge_index, y=y)
 
-    # === 保存 ===
+    # ===================== 4️⃣ 保存文件 =====================
     os.makedirs(save_dir, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(csv_path))[0]
     nodes_csv = os.path.join(save_dir, f"{base_name}_nodes.csv")
@@ -170,13 +182,12 @@ def build_similarity_knn_graph(
     pd.DataFrame(edges, columns=["source", "target"]).to_csv(edges_csv, index=False)
     torch.save(data, graph_pt)
 
-    print(f"✅ 图构建完成，共 {num_nodes} 个节点，{len(edges)//2} 条无向边。")
+    print(f"\n✅ 图构建完成，共 {num_nodes} 个节点，{len(edges)//2} 条无向边。")
     print(f"📁 节点文件: {nodes_csv}")
     print(f"📁 边文件:   {edges_csv}")
     print(f"📁 图文件:   {graph_pt}")
 
     return nodes_csv, edges_csv, graph_pt
-
 
 def add_random_masks_to_pyg(
     graph_path: str,
