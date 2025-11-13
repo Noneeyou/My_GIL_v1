@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv
-
+from torch_geometric.nn import SAGEConv
 
 # ========= 1️⃣ 图编码器部分 =========
 class GCNEncoder(nn.Module):
@@ -11,8 +11,8 @@ class GCNEncoder(nn.Module):
     """
     def __init__(self, in_dim, hidden_dim, out_dim):
         super(GCNEncoder, self).__init__()
-        self.conv1 = GCNConv(in_dim, hidden_dim)
-        self.conv2 = GCNConv(hidden_dim, out_dim)
+        self.conv1 = SAGEConv(in_dim, hidden_dim)
+        self.conv2 = SAGEConv(hidden_dim, out_dim)
 
     def forward(self, x, edge_index):
         x = F.relu(self.conv1(x, edge_index))
