@@ -23,17 +23,23 @@ class GCNEncoder(nn.Module):
 # ========= 2️⃣ 投影头部分 =========
 class MLPHead(nn.Module):
     """
-    投影头，将编码器输出映射到对比空间。
+    高质量投影头（SimCLR 标准）
+    结构：Linear → LayerNorm → GELU → Linear
     """
     def __init__(self, in_dim, proj_dim):
         super(MLPHead, self).__init__()
         self.fc1 = nn.Linear(in_dim, proj_dim)
+        self.ln1 = nn.LayerNorm(proj_dim)
+        self.act = nn.GELU()
         self.fc2 = nn.Linear(proj_dim, proj_dim)
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
+        x = self.fc1(x)
+        x = self.ln1(x)
+        x = self.act(x)  # 非线性提升投影空间表达能力
         x = self.fc2(x)
         return x
+
 
 
 # ========= 3️⃣ 封装类：GraphContrastiveLearner =========
