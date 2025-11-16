@@ -200,33 +200,28 @@ def augment_graph(data, feature_drop_prob=0.1, edge_drop_prob=0.1, noise_std=0.0
 
 class DownstreamClassifier(nn.Module):
     """
-    独立下游分类器：
-    - 输入：encoder 输出的 h 表示
-    - 支持 mask 的监督训练
-    - 可用于 linear probe（冻结 encoder）
-    - 也可用于 fine-tune（encoder 可训练）
+    下游分类头（仅在两层之间加入激活函数）
     """
     def __init__(self, in_dim, num_classes, hidden_dim=128):
         super(DownstreamClassifier, self).__init__()
 
-        # 简单 MLP 分类头（两层）
         self.fc1 = nn.Linear(in_dim, hidden_dim)
+        self.act = nn.ReLU()            # ⭐ 新增：激活函数
         self.fc2 = nn.Linear(hidden_dim, num_classes)
 
     def forward(self, h):
         """
         h: encoder 输出的节点特征 [N, in_dim]
         """
-        x = F.relu(self.fc1(h))
+        x = self.act(self.fc1(h))       # ⭐ 这里加激活
         logits = self.fc2(x)
         return logits
 
     def compute_loss(self, h, y, mask):
         """
-        下游分类损失（带 mask，只对有标签节点训练）
+        下游分类损失（仅对有标签节点）
         """
         logits = self.forward(h)
-
         idx = mask.nonzero(as_tuple=False).view(-1)
         logits = logits[idx]
         y_true = y[idx]
