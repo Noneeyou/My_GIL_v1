@@ -53,7 +53,10 @@ class GraphContrastiveLearner(nn.Module):
         super(GraphContrastiveLearner, self).__init__()
         self.encoder = GCNEncoder(in_dim, hidden_dim, out_dim)
         self.projector = MLPHead(out_dim, proj_dim)
-        self.tau = tau
+        self.tau = nn.Parameter(torch.tensor(tau))
+        self.lambda_bt = 0.005      # Barlow Twins 权重
+        self.lambda_im = 0.1        # InfoMin 权重
+
 
     def forward(self, x, edge_index):
         """
@@ -63,19 +66,52 @@ class GraphContrastiveLearner(nn.Module):
         z = self.projector(h)
         return h, z
 
-    def info_nce_loss(self, z1, z2):
+    def info_nce_loss(self, z1, z2, symmetric: bool = True):
         """
-        计算 InfoNCE 对比学习损失
+        最终优化版 InfoNCE：
+        - 可学习温度 tau
+        - 数值稳定 (log_softmax)
+        - 对称 InfoNCE（效果更好）
+        - Barlow Twins 正则（防 collapse）
+        - InfoMin 正则（让表示更分散）
         """
+        # --------------- 1) 归一化（余弦相似度） ---------------
         z1 = F.normalize(z1, dim=1)
         z2 = F.normalize(z2, dim=1)
 
-        sim_matrix = torch.matmul(z1, z2.T) / self.tau
-        sim_matrix = torch.exp(sim_matrix)
+        N = z1.size(0)
+        tau = torch.clamp(self.tau, min=0.01, max=2.0)   # 限制范围，防剧烈震荡
 
-        pos = sim_matrix.diag()
-        loss = -torch.log(pos / (sim_matrix.sum(dim=1) + 1e-8))
-        return loss.mean()
+        # --------------- 2) 主 InfoNCE ---------------
+        logits = torch.matmul(z1, z2.T) / tau
+        log_prob_12 = F.log_softmax(logits, dim=1)
+        loss_12 = -log_prob_12.diag().mean()
+
+        if symmetric:
+            log_prob_21 = F.log_softmax(logits.T, dim=1)
+            loss_21 = -log_prob_21.diag().mean()
+            info_nce = 0.5 * (loss_12 + loss_21)
+        else:
+            info_nce = loss_12
+
+        # --------------- 3) Barlow Twins 正则（防 collapse） ---------------
+        z1_bn = z1 - z1.mean(dim=0, keepdim=True)
+        z2_bn = z2 - z2.mean(dim=0, keepdim=True)
+
+        c = (z1_bn.T @ z2_bn) / N    # 协方差矩阵（proj_dim × proj_dim）
+
+        # 理想矩阵是单位阵 I
+        I = torch.eye(c.size(0), device=c.device)
+        barlow_loss = ((c - I)**2).sum()
+
+        # --------------- 4) InfoMin 正则（防止表示过于相似） ---------------
+        # 鼓励 z1 和 z2 的多样性更高（相反于 InfoMax）
+        info_min = (z1 @ z2.T).pow(2).mean()
+
+        # --------------- 5) 融合最终损失 ---------------
+        loss = info_nce + self.lambda_bt * barlow_loss + self.lambda_im * info_min
+        
+        return loss
 
     def compute_loss(self, x1, edge_index1, x2, edge_index2):
         """
