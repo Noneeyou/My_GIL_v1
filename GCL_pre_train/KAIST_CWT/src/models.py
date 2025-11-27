@@ -54,8 +54,8 @@ class GraphContrastiveLearner(nn.Module):
         self.encoder = GCNEncoder(in_dim, hidden_dim, out_dim)
         self.projector = MLPHead(out_dim, proj_dim)
         self.tau = nn.Parameter(torch.tensor(tau))
-        self.lambda_bt = 0.005      # Barlow Twins 权重
-        self.lambda_im = 0.1        # InfoMin 权重
+        self.lambda_bt = 0.0      # Barlow Twins 权重
+        self.lambda_im = 0.0        # InfoMin 权重
 
 
     def forward(self, x, edge_index):
