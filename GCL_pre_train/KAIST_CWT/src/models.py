@@ -198,31 +198,79 @@ def augment_graph(data, feature_drop_prob=0.1, edge_drop_prob=0.1, noise_std=0.0
 
     return aug_data
 
-class DownstreamClassifier(nn.Module):
-    """
-    下游分类头（仅在两层之间加入激活函数）
-    """
-    def __init__(self, in_dim, num_classes, hidden_dim=128):
-        super(DownstreamClassifier, self).__init__()
 
-        self.fc1 = nn.Linear(in_dim, hidden_dim)
-        self.act = nn.ReLU()            # ⭐ 新增：激活函数
-        self.fc2 = nn.Linear(hidden_dim, num_classes)
+class KANLayer(nn.Module):
+    """
+    Kolmogorov-Arnold Layer (1D spline per input dimension)
+    """
+
+    def __init__(self, in_dim, out_dim, num_knots=8):
+        super().__init__()
+
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.num_knots = num_knots
+
+        # spline coefficients
+        self.coeff = nn.Parameter(
+            torch.randn(in_dim, out_dim, num_knots) * 0.01
+        )
+
+        # fixed knot positions in [-1,1]
+        self.register_buffer(
+            "knots",
+            torch.linspace(-1, 1, num_knots)
+        )
+
+    def forward(self, x):
+        """
+        x: [B, in_dim]
+        """
+
+        # normalize
+        x = torch.tanh(x)
+
+        # [B,in] → [B,in,1]
+        x = x.unsqueeze(-1)
+
+        # B-spline weights
+        dist = torch.abs(x - self.knots)
+        w = torch.clamp(1 - dist, min=0)
+
+        # weighted sum
+        # [B,in,K] × [in,out,K] → [B,out]
+        y = torch.einsum("bik,iok->bo", w, self.coeff)
+
+        return y
+
+class DownstreamKANClassifier(nn.Module):
+    """
+    KAN-based downstream classifier
+    """
+
+    def __init__(self, in_dim, num_classes, hidden_dim=64, num_knots=8):
+        super().__init__()
+
+        self.kan1 = KANLayer(in_dim, hidden_dim, num_knots)
+        self.kan2 = KANLayer(hidden_dim, num_classes, num_knots)
 
     def forward(self, h):
         """
-        h: encoder 输出的节点特征 [N, in_dim]
+        h: [N,in_dim]
         """
-        x = self.act(self.fc1(h))       # ⭐ 这里加激活
-        logits = self.fc2(x)
+
+        x = self.kan1(h)
+        x = torch.tanh(x)
+        logits = self.kan2(x)
+
         return logits
 
     def compute_loss(self, h, y, mask):
-        """
-        下游分类损失（仅对有标签节点）
-        """
+
         logits = self.forward(h)
+
         idx = mask.nonzero(as_tuple=False).view(-1)
+
         logits = logits[idx]
         y_true = y[idx]
 
